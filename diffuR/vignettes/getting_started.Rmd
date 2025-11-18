@@ -1,0 +1,45 @@
+---
+title: "diffuR: Getting Started"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{diffuR: Getting Started}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(collapse = TRUE, comment = "#>")
+```
+
+## Installation
+
+```r
+# install.packages("Rcpp")
+# install.packages("torch")
+# install.packages("magrittr")
+# install.packages("ggplot2")
+# install.packages("foreach"); install.packages("doParallel")
+# remotes::install_github("mlverse/torchvision") # for MNIST loader
+```
+
+## Distribution Example
+
+```r
+library(diffuR)
+X <- swiss_roll(2000, noise = 0.1)
+fit <- train_diffusion_dist(X, epochs = 10, T = 500, batch_size = 512)
+
+samp <- sample_ddpm(fit, n = 2000, steps = 500)
+p <- plot_2d_samples(real = X, fake = `colnames<-`(samp, colnames(X)))
+print(p)
+```
+
+## Image Example (MNIST)
+
+```r
+dl <- mnist_train_dataloader(batch_size = 128)
+fit_img <- train_diffusion_image(dl, epochs = 1, T = 500)
+
+imgs <- sample_ddpm(fit_img, n = 16, steps = 500, shape_img = c(28,28))
+op <- par(mfrow=c(4,4), mar=c(0,0,0,0)); for(i in 1:16) image(imgs[i,,], col=gray.colors(256), axes=FALSE); par(op)
+```

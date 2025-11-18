@@ -1,0 +1,30 @@
+Package: diffuR
+Type: Package
+Title: Lightweight Diffusion Models in R with Rcpp and torch
+Version: 0.1.0
+Authors@R: c(person(given = "Your", family = "Name", role = c("aut","cre"), email = "you@example.com"))
+Description: Minimal diffusion probabilistic models (DDPM) and score-based SDE samplers for low-dimensional distributions and small images. 
+    Core Gaussian kernels are implemented in C++ via RcppArmadillo, with models trained using torch for R. 
+    Includes distribution and image examples, and optional parallel evaluation with foreach/doParallel.
+License: MIT + file LICENSE
+Encoding: UTF-8
+LinkingTo: Rcpp, RcppArmadillo
+Imports: 
+    Rcpp (>= 1.0.13),
+    RcppArmadillo,
+    torch (>= 0.12),
+    magrittr,
+    ggplot2,
+    stats,
+    utils,
+    methods,
+    foreach,
+    doParallel
+Suggests:
+    knitr,
+    rmarkdown,
+    testthat (>= 3.0.0),
+    torchvision
+SystemRequirements: C++17
+RoxygenNote: 7.3.2
+Config/testthat/edition: 3
