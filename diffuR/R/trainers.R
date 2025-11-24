@@ -155,24 +155,43 @@ train_diffusion_dist <- function(X, epochs = 50, T = 1000, lr = 1e-3, batch_size
 #   list(model = model, schedule = schedule, T = T, type = "ddpm_cnn")
 # }
 
-# Image trainer (CNN) for 28x28 grayscale (e.g., MNIST)
+# Image trainer (UNet) for 28x28 grayscale (e.g., MNIST)
 #' @export
-train_diffusion_image <- function(train_dl, epochs = 3, T = 1000, lr = 2e-4,
-                                  schedule = beta_linear(T), verbose = TRUE, seed = 42){
-  set.seed(seed); torch::torch_manual_seed(seed)
-  model <- build_cnn_eps()()
+train_diffusion_image <- function(train_dl, epochs = 3, T = 1000, lr = 1e-4,
+                                  schedule = beta_linear(T), verbose = TRUE, seed = 42,
+                                  use_unet = TRUE, model_arch = NULL) {
+  set.seed(seed)
+  torch::torch_manual_seed(seed)
+  
+  # 选择模型架构
+  if (use_unet) {
+    # UNet：参数数量多但效果好
+    model <- build_unet_eps(ch = 64, ch_mult = c(1, 2), t_dim = 128, num_res_blocks = 2)()
+    cat("Using UNet architecture (recommended for better quality)\n")
+  } else if (!is.null(model_arch)) {
+    # 自定义模型
+    model <- model_arch()
+  } else {
+    # 回退到简单CNN
+    model <- build_cnn_eps()()
+    cat("Using simple CNN (baseline)\n")
+  }
+  
+  # 使用梯度剪裁防止爆炸
   opt <- torch::optim_adam(model$parameters, lr = lr)
-
+  
   for (e in seq_len(epochs)) {
-    model$train(); total <- 0; nstep <- 0
+    model$train()
+    total <- 0
+    nstep <- 0
+    max_grad_norm <- 1.0  # 梯度剪裁阈值
 
     coro::loop(for (b in train_dl) {
-
       # b[[1]]: [28, 28, B] in [0,1]
       img <- b[[1]]$to(dtype = torch::torch_float())
 
       # 维度重排: [H,W,B] -> [B,H,W] -> [B,1,H,W]
-      x0 <- img$permute(c(3L, 1L, 2L))$unsqueeze(2L)  # [B,1,28,28]
+      x0 <- img$permute(c(3L, 1L, 2L))$unsqueeze(2L)
 
       # scale to [-1,1]
       x0 <- x0 * 2 - 1
@@ -180,7 +199,6 @@ train_diffusion_image <- function(train_dl, epochs = 3, T = 1000, lr = 2e-4,
 
       # 采样时间步 t
       t_idx <- sample.int(T, bs, replace = TRUE)
-      # t_frac: [B] 向量，CNN 里会自动变成 [B,1]
       t_frac <- torch::torch_tensor(
         as.numeric(t_idx) / T,
         dtype = torch::torch_float()
@@ -188,11 +206,11 @@ train_diffusion_image <- function(train_dl, epochs = 3, T = 1000, lr = 2e-4,
 
       eps_true <- torch::torch_randn_like(x0)
 
-      sa  <- torch::torch_tensor(
-        array(schedule$sqrt_alpha_bar[t_idx], dim = c(bs,1,1,1))
+      sa <- torch::torch_tensor(
+        array(schedule$sqrt_alpha_bar[t_idx], dim = c(bs, 1, 1, 1))
       )
       som <- torch::torch_tensor(
-        array(schedule$sqrt_one_minus_alpha_bar[t_idx], dim = c(bs,1,1,1))
+        array(schedule$sqrt_one_minus_alpha_bar[t_idx], dim = c(bs, 1, 1, 1))
       )
 
       x_t <- sa * x0 + som * eps_true
@@ -201,6 +219,10 @@ train_diffusion_image <- function(train_dl, epochs = 3, T = 1000, lr = 2e-4,
       eps_pred <- model(x_t, t_frac)
       loss <- loss_ddpm_mse(eps_pred, eps_true)
       loss$backward()
+      
+      # 梯度剪裁
+      torch::nn_utils_clip_grad_norm_(model$parameters, max_grad_norm)
+      
       opt$step()
 
       total <- total + as.numeric(loss$item())
@@ -208,9 +230,11 @@ train_diffusion_image <- function(train_dl, epochs = 3, T = 1000, lr = 2e-4,
     })
 
     if (verbose) {
-      cat(sprintf("Epoch %d | loss=%.4f\n", e, total / max(nstep, 1)))
+      avg_loss <- total / max(nstep, 1)
+      cat(sprintf("Epoch %d | loss=%.4f\n", e, avg_loss))
     }
   }
 
   list(model = model, schedule = schedule, T = T, type = "ddpm_cnn")
+  # list(model = model, schedule = schedule, T = T, type = "ddpm_unet")
 }

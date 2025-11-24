@@ -8,6 +8,28 @@ swiss_roll <- function(n = 2000, noise = 0.1, seed = 1){
   x
 }
 
+# 8-Gaussians ring
+#' @export
+gauss8_ring <- function(n = 2000, radius = 2, noise = 0.1, seed = 1) {
+  set.seed(seed)
+  K <- 8
+  # 每个簇中心的角度
+  angles <- seq(0, 2*pi, length.out = K + 1)[- (K + 1)]
+  
+  # 给每个样本随机分配一个簇
+  k_id <- sample.int(K, n, replace = TRUE)
+  mu_x <- radius * cos(angles[k_id])
+  mu_y <- radius * sin(angles[k_id])
+  
+  x <- cbind(
+    mu_x + rnorm(n, sd = noise),
+    mu_y + rnorm(n, sd = noise)
+  )
+  colnames(x) <- c("x1", "x2")
+  x
+}
+
+
 #' @export
 plot_2d_samples <- function(real, fake){
   df1 <- data.frame(real); df1$type <- "real"

@@ -54,123 +54,335 @@
 #     return(img$to(device="cpu")$squeeze(2)$numpy())
 #   } else stop("Unknown fit$type")
 # }
+
+
+# sample_ddpm <- function(fit, n = 64, steps = NULL, shape_img = NULL, seed = 123){
+#   set.seed(seed); torch::torch_manual_seed(seed)
+#   if(is.null(steps)) steps <- fit$T
+#   sch <- fit$schedule
+
+#   if (fit$type == "ddpm_mlp") {
+#     d <- fit$dim
+#     x <- torch::torch_randn(n, d)
+#     T <- fit$T
+
+#     for (ti in steps:1) {
+#       t_frac <- torch::torch_full(c(n, 1), ti / T)
+#       eps <- fit$model(x, t_frac)   # 预测噪声 epsilon_theta(x_t, t)
+
+#       beta_t      <- sch$beta[ti]
+#       alpha_t     <- sch$alpha[ti]
+#       alpha_bar_t <- sch$alpha_bar[ti]
+
+#       if (ti > 1) {
+#         alpha_bar_prev <- sch$alpha_bar[ti - 1]
+#       } else {
+#         alpha_bar_prev <- 1
+#       }
+
+#       # posterior variance β̃_t
+#       beta_t_tilde <- (1 - alpha_bar_prev) / (1 - alpha_bar_t) * beta_t
+
+#       # μ_theta(x_t, t) = 1/sqrt(alpha_t) * (x_t - beta_t/sqrt(1-alpha_bar_t) * eps)
+#       mu <- (1 / sqrt(alpha_t)) * (
+#         x - (beta_t / sqrt(1 - alpha_bar_t)) * eps
+#       )
+
+#       if (ti > 1) {
+#         x <- mu + sqrt(beta_t_tilde) * torch::torch_randn_like(x)
+#       } else {
+#         x <- mu
+#       }
+#     }
+
+#     return(as.matrix(x))
+#   }
+
+#   # # CNN 分支先暂时沿用你原来的，等 dist 这边跑通了再一起改
+#   # if (fit$type == "ddpm_cnn") {
+#   #   stopifnot(!is.null(shape_img))
+#   #   B <- n; H <- shape_img[1]; W <- shape_img[2]
+#   #   x <- torch::torch_randn(B, 1, H, W)
+#   #   T <- fit$T
+
+#   #   for (ti in steps:1) {
+#   #     t_frac <- torch::torch_full(c(B,1), ti / T)
+#   #     eps <- fit$model(x, t_frac)
+
+#   #     beta_t      <- sch$beta[ti]
+#   #     alpha_t     <- sch$alpha[ti]
+#   #     alpha_bar_t <- sch$alpha_bar[ti]
+#   #     if (ti > 1) {
+#   #       alpha_bar_prev <- sch$alpha_bar[ti - 1]
+#   #     } else {
+#   #       alpha_bar_prev <- 1
+#   #     }
+#   #     beta_t_tilde <- (1 - alpha_bar_prev) / (1 - alpha_bar_t) * beta_t
+
+#   #     mu <- (1 / sqrt(alpha_t)) * (
+#   #       x - (beta_t / sqrt(1 - alpha_bar_t)) * eps
+#   #     )
+
+#   #     if (ti > 1) {
+#   #       x <- mu + sqrt(beta_t_tilde) * torch::torch_randn_like(x)
+#   #     } else {
+#   #       x <- mu
+#   #     }
+#   #   }
+#   #   img <- (x$clamp(-1,1) + 1)/2
+#   #   return(img$to(device="cpu")$squeeze(2)$numpy())
+#   # }
+
+#   if (fit$type == "ddpm_cnn") {
+#     stopifnot(!is.null(shape_img))
+#     B <- n; H <- shape_img[1]; W <- shape_img[2]
+#     x <- torch::torch_randn(B, 1, H, W)
+#     T <- fit$T
+
+#     for (ti in steps:1) {
+#       t_frac <- torch::torch_full(c(B,1), ti / T)
+#       eps <- fit$model(x, t_frac)
+
+#       beta_t      <- sch$beta[ti]
+#       alpha_t     <- sch$alpha[ti]
+#       alpha_bar_t <- sch$alpha_bar[ti]
+#       if (ti > 1) {
+#         alpha_bar_prev <- sch$alpha_bar[ti - 1]
+#       } else {
+#         alpha_bar_prev <- 1
+#       }
+#       beta_t_tilde <- (1 - alpha_bar_prev) / (1 - alpha_bar_t) * beta_t
+
+#       mu <- (1 / sqrt(alpha_t)) * (
+#         x - (beta_t / sqrt(1 - alpha_bar_t)) * eps
+#       )
+
+#       if (ti > 1) {
+#         x <- mu + sqrt(beta_t_tilde) * torch::torch_randn_like(x)
+#       } else {
+#         x <- mu
+#       }
+#     }
+
+#     img <- (x$clamp(-1,1) + 1)/2  # 仍然是 tensor [B,1,H,W]
+
+#     # ✅ 正确写法：先搬到 CPU，squeeze 掉通道维，然后用 as.array 取出 R array
+#     img <- img$to(device = "cpu")$squeeze(2)
+#     return(as.array(img))  # [B,H,W]
+#   }
+
+#   stop("Unknown fit$type")
+# }
+
+# sample_ddpm <- function(fit, n = 64, steps = NULL, shape_img = NULL, seed = 123){
+#   set.seed(seed)
+#   torch::torch_manual_seed(seed)
+
+#   if (is.null(steps)) steps <- fit$T
+#   sch   <- fit$schedule
+#   model <- fit$model
+
+#   # 推断阶段用 eval 模式（关掉 dropout / batchnorm 的训练行为）
+#   model$eval()
+
+#   # ------- 分布 MLP 采样分支 -------
+#   if (fit$type == "ddpm_mlp") {
+#     d <- fit$dim
+#     x <- torch::torch_randn(n, d)   # [n, d]
+#     T <- fit$T
+
+#     for (ti in steps:1) {
+#       t_frac <- torch::torch_full(c(n, 1), ti / T, dtype = torch::torch_float())
+#       eps    <- model(x, t_frac)   # [n, d]
+
+#       beta_t      <- sch$beta[ti]
+#       alpha_t     <- sch$alpha[ti]
+#       alpha_bar_t <- sch$alpha_bar[ti]
+
+#       if (ti > 1) {
+#         alpha_bar_prev <- sch$alpha_bar[ti - 1]
+#       } else {
+#         alpha_bar_prev <- 1
+#       }
+
+#       beta_t_tilde <- (1 - alpha_bar_prev) / (1 - alpha_bar_t) * beta_t
+
+#       mu <- (1 / sqrt(alpha_t)) * (
+#         x - (beta_t / sqrt(1 - alpha_bar_t)) * eps
+#       )
+
+#       if (ti > 1) {
+#         x <- mu + sqrt(beta_t_tilde) * torch::torch_randn_like(x)
+#       } else {
+#         x <- mu
+#       }
+#     }
+
+#     return(as.matrix(x))
+#   }
+
+#   # ------- 图像 CNN/UNet 采样分支 -------
+#   if (fit$type == "ddpm_cnn") {
+#     stopifnot(!is.null(shape_img))
+#     B <- n
+#     H <- shape_img[1]
+#     W <- shape_img[2]
+
+#     x <- torch::torch_randn(B, 1, H, W)  # [B,1,H,W]
+#     T <- fit$T
+
+#     for (ti in steps:1) {
+#       # t_frac: [B,1]
+#       t_frac <- torch::torch_full(
+#         c(B, 1),
+#         ti / T,
+#         dtype = torch::torch_float()
+#       )
+
+#       eps <- model(x, t_frac)  # [B,1,H,W]
+
+#       beta_t      <- sch$beta[ti]
+#       alpha_t     <- sch$alpha[ti]
+#       alpha_bar_t <- sch$alpha_bar[ti]
+
+#       if (ti > 1) {
+#         alpha_bar_prev <- sch$alpha_bar[ti - 1]
+#       } else {
+#         alpha_bar_prev <- 1
+#       }
+
+#       beta_t_tilde <- (1 - alpha_bar_prev) / (1 - alpha_bar_t) * beta_t
+
+#       mu <- (1 / sqrt(alpha_t)) * (
+#         x - (beta_t / sqrt(1 - alpha_bar_t)) * eps
+#       )
+
+#       if (ti > 1) {
+#         x <- mu + sqrt(beta_t_tilde) * torch::torch_randn_like(x)
+#       } else {
+#         x <- mu
+#       }
+#     }
+
+#     # x ~ [-1,1] -> [0,1]
+#     img <- (x$clamp(-1, 1) + 1) / 2  # [B,1,H,W]
+
+#     img <- img$to(device = "cpu")$squeeze(2)  # [B,H,W]
+
+#     return(as.array(img))
+#   }
+
+#   stop("Unknown fit$type: ", fit$type)
+# }
+
 sample_ddpm <- function(fit, n = 64, steps = NULL, shape_img = NULL, seed = 123){
-  set.seed(seed); torch::torch_manual_seed(seed)
-  if(is.null(steps)) steps <- fit$T
-  sch <- fit$schedule
+  set.seed(seed)
+  torch::torch_manual_seed(seed)
 
-  if (fit$type == "ddpm_mlp") {
-    d <- fit$dim
-    x <- torch::torch_randn(n, d)
-    T <- fit$T
+  if (is.null(steps)) steps <- fit$T
+  sch   <- fit$schedule
+  model <- fit$model
 
-    for (ti in steps:1) {
-      t_frac <- torch::torch_full(c(n, 1), ti / T)
-      eps <- fit$model(x, t_frac)   # 预测噪声 epsilon_theta(x_t, t)
+  # 评估模式（关掉 dropout / BN 的训练行为）
+  model$eval()
 
-      beta_t      <- sch$beta[ti]
-      alpha_t     <- sch$alpha[ti]
-      alpha_bar_t <- sch$alpha_bar[ti]
+  out <- with_no_grad({   # <<< 关键：采样全部在 no_grad 里
 
-      if (ti > 1) {
-        alpha_bar_prev <- sch$alpha_bar[ti - 1]
-      } else {
-        alpha_bar_prev <- 1
+    # ------- MLP 分支 -------
+    if (fit$type == "ddpm_mlp") {
+      d <- fit$dim
+      x <- torch::torch_randn(n, d)   # [n, d]
+      T <- fit$T
+
+      for (ti in steps:1) {
+        t_frac <- torch::torch_full(c(n, 1), ti / T, dtype = torch::torch_float())
+        eps    <- model(x, t_frac)   # [n, d]
+
+        beta_t      <- sch$beta[ti]
+        alpha_t     <- sch$alpha[ti]
+        alpha_bar_t <- sch$alpha_bar[ti]
+
+        if (ti > 1) {
+          alpha_bar_prev <- sch$alpha_bar[ti - 1]
+        } else {
+          alpha_bar_prev <- 1
+        }
+
+        beta_t_tilde <- (1 - alpha_bar_prev) / (1 - alpha_bar_t) * beta_t
+
+        mu <- (1 / sqrt(alpha_t)) * (
+          x - (beta_t / sqrt(1 - alpha_bar_t)) * eps
+        )
+
+        if (ti > 1) {
+          x <- mu + sqrt(beta_t_tilde) * torch::torch_randn_like(x)
+        } else {
+          x <- mu
+        }
       }
 
-      # posterior variance β̃_t
-      beta_t_tilde <- (1 - alpha_bar_prev) / (1 - alpha_bar_t) * beta_t
-
-      # μ_theta(x_t, t) = 1/sqrt(alpha_t) * (x_t - beta_t/sqrt(1-alpha_bar_t) * eps)
-      mu <- (1 / sqrt(alpha_t)) * (
-        x - (beta_t / sqrt(1 - alpha_bar_t)) * eps
-      )
-
-      if (ti > 1) {
-        x <- mu + sqrt(beta_t_tilde) * torch::torch_randn_like(x)
-      } else {
-        x <- mu
-      }
+      return(as.matrix(x))
     }
 
-    return(as.matrix(x))
-  }
+    # ------- CNN / UNet 分支 -------
+    if (fit$type == "ddpm_cnn") {
+      stopifnot(!is.null(shape_img))
+      B <- n
+      H <- shape_img[1]
+      W <- shape_img[2]
 
-  # # CNN 分支先暂时沿用你原来的，等 dist 这边跑通了再一起改
-  # if (fit$type == "ddpm_cnn") {
-  #   stopifnot(!is.null(shape_img))
-  #   B <- n; H <- shape_img[1]; W <- shape_img[2]
-  #   x <- torch::torch_randn(B, 1, H, W)
-  #   T <- fit$T
+      x <- torch::torch_randn(B, 1, H, W)  # [B,1,H,W]
+      T <- fit$T
 
-  #   for (ti in steps:1) {
-  #     t_frac <- torch::torch_full(c(B,1), ti / T)
-  #     eps <- fit$model(x, t_frac)
+      for (ti in steps:1) {
+        t_frac <- torch::torch_full(
+          c(B, 1),
+          ti / T,
+          dtype = torch::torch_float()
+        )
 
-  #     beta_t      <- sch$beta[ti]
-  #     alpha_t     <- sch$alpha[ti]
-  #     alpha_bar_t <- sch$alpha_bar[ti]
-  #     if (ti > 1) {
-  #       alpha_bar_prev <- sch$alpha_bar[ti - 1]
-  #     } else {
-  #       alpha_bar_prev <- 1
-  #     }
-  #     beta_t_tilde <- (1 - alpha_bar_prev) / (1 - alpha_bar_t) * beta_t
+        eps <- model(x, t_frac)  # [B,1,H,W]
 
-  #     mu <- (1 / sqrt(alpha_t)) * (
-  #       x - (beta_t / sqrt(1 - alpha_bar_t)) * eps
-  #     )
+        beta_t      <- sch$beta[ti]
+        alpha_t     <- sch$alpha[ti]
+        alpha_bar_t <- sch$alpha_bar[ti]
 
-  #     if (ti > 1) {
-  #       x <- mu + sqrt(beta_t_tilde) * torch::torch_randn_like(x)
-  #     } else {
-  #       x <- mu
-  #     }
-  #   }
-  #   img <- (x$clamp(-1,1) + 1)/2
-  #   return(img$to(device="cpu")$squeeze(2)$numpy())
-  # }
+        if (ti > 1) {
+          alpha_bar_prev <- sch$alpha_bar[ti - 1]
+        } else {
+          alpha_bar_prev <- 1
+        }
 
-  if (fit$type == "ddpm_cnn") {
-    stopifnot(!is.null(shape_img))
-    B <- n; H <- shape_img[1]; W <- shape_img[2]
-    x <- torch::torch_randn(B, 1, H, W)
-    T <- fit$T
+        beta_t_tilde <- (1 - alpha_bar_prev) / (1 - alpha_bar_t) * beta_t
 
-    for (ti in steps:1) {
-      t_frac <- torch::torch_full(c(B,1), ti / T)
-      eps <- fit$model(x, t_frac)
+        mu <- (1 / sqrt(alpha_t)) * (
+          x - (beta_t / sqrt(1 - alpha_bar_t)) * eps
+        )
 
-      beta_t      <- sch$beta[ti]
-      alpha_t     <- sch$alpha[ti]
-      alpha_bar_t <- sch$alpha_bar[ti]
-      if (ti > 1) {
-        alpha_bar_prev <- sch$alpha_bar[ti - 1]
-      } else {
-        alpha_bar_prev <- 1
+        if (ti > 1) {
+          x <- mu + sqrt(beta_t_tilde) * torch::torch_randn_like(x)
+        } else {
+          x <- mu
+        }
       }
-      beta_t_tilde <- (1 - alpha_bar_prev) / (1 - alpha_bar_t) * beta_t
 
-      mu <- (1 / sqrt(alpha_t)) * (
-        x - (beta_t / sqrt(1 - alpha_bar_t)) * eps
-      )
+      # x ~ [-1,1] -> [0,1]
+      img <- (x$clamp(-1, 1) + 1) / 2  # [B,1,H,W]
 
-      if (ti > 1) {
-        x <- mu + sqrt(beta_t_tilde) * torch::torch_randn_like(x)
-      } else {
-        x <- mu
-      }
+      img <- img$to(device = "cpu")$squeeze(2)  # [B,H,W]
+      return(as.array(img))
     }
 
-    img <- (x$clamp(-1,1) + 1)/2  # 仍然是 tensor [B,1,H,W]
+    stop("Unknown fit$type: ", fit$type)
+  })
 
-    # ✅ 正确写法：先搬到 CPU，squeeze 掉通道维，然后用 as.array 取出 R array
-    img <- img$to(device = "cpu")$squeeze(2)
-    return(as.array(img))  # [B,H,W]
-  }
+  # 如果你之后还要继续训练，可以在外面再 model$train() 一下
+  # model$train()
 
-  stop("Unknown fit$type")
+  out
 }
+
+
 
 
 # Score from epsilon for VP SDE: score = -eps / sigma(t), sigma^2 = 1 - alpha_bar

@@ -11,8 +11,6 @@ source("/Users/jiang/MY_RUC/Rcoding/Rcpp/finalProj/diffuR/R/sampling.R")
 source("/Users/jiang/MY_RUC/Rcoding/Rcpp/finalProj/diffuR/R/schedules.R")
 source("/Users/jiang/MY_RUC/Rcoding/Rcpp/finalProj/diffuR/R/trainers.R")
 
-
-
 # ==== 0. 加载必要包 ====
 library(torch)
 library(ggplot2)
@@ -31,9 +29,9 @@ sch <- beta_cosine(T = 1000)
 
 fit_dist <- train_diffusion_dist(
   X         = X_std,
-  epochs    = 300,        # 可以先用 150 看趋势
+  epochs    = 200,        # 可以先用 150 看趋势
   T         = 1000,
-  lr        = 5e-4,
+  lr        = 1e-4,
   batch_size = 512,
   schedule  = sch,
   verbose   = TRUE,
@@ -47,51 +45,237 @@ fake_std <- sample_ddpm(
   steps = fit_dist$T
 )
 
-# 4. 把样本还原回原坐标
-fake <- sweep(fake_std, 2, Xsd, `*`)
-fake <- sweep(fake,     2, Xmean, `+`)
-colnames(fake) <- c("x1", "x2")
+## ===== 1. 选择想展示的时间步（扩散方向：从干净数据到高噪声） =====
+t_show <- c(0, 100, 200, 500, 1000)   # 可以自己改，比如多/少几个
 
-# 5. 画图
-plot_2d_samples(real = X, fake = fake)
+## ===== 2. 构造各个时间步下的 "noised" 样本（在标准化空间） =====
+snap_std <- list()
+snap_std[["t0"]] <- as.matrix(X_std)   # t = 0：原始标准化数据
+
+set.seed(123)  # 为了可重复
+for (t in t_show[-1]) {
+  snap_std[[paste0("t", t)]] <- q_sample_xt_given_x0(
+    X0 = as.matrix(X_std),
+    sa = sch$sqrt_alpha_bar[t],          # sqrt(alpha_bar_t)
+    om = sch$sqrt_one_minus_alpha_bar[t] # sqrt(1 - alpha_bar_t)
+  )
+}
+
+## ===== 3. 统一裁剪半径，避免极端 outlier 干扰可视化 =====
+# 用训练数据本身来设定一个“合理半径”，比如 99% 分位
+r2_real <- rowSums(X_std^2)
+R <- sqrt(quantile(r2_real, 0.99))   # 你也可以改成 0.95、0.999 等
+
+## 把真实数据先还原好（后面每个面板复用）
+X_real_clip_std <- X_std[r2_real <= R^2, , drop = FALSE]
+X_real_clip <- sweep(X_real_clip_std, 2, Xsd,   `*`)
+X_real_clip <- sweep(X_real_clip,     2, Xmean, `+`)
+colnames(X_real_clip) <- c("x1", "x2")
+
+## ===== 4. 组装成一个大 data.frame，用 facet 展示每个 t =====
+df_list <- list()
+
+for (nm in names(snap_std)) {
+  Xt_std <- snap_std[[nm]]
+  
+  # 裁剪掉半径太大的点（和真实数据用同一个 R，方便比较）
+  r2 <- rowSums(Xt_std^2)
+  keep <- r2 <= R^2
+  Xt_std_clip <- Xt_std[keep, , drop = FALSE]
+  
+  # 还原回原坐标
+  Xt <- sweep(Xt_std_clip, 2, Xsd,   `*`)
+  Xt <- sweep(Xt,          2, Xmean, `+`)
+  colnames(Xt) <- c("x1", "x2")
+  
+  step_lab <- paste0("t = ", sub("t", "", nm))
+  
+  df_fake <- data.frame(
+    x1   = Xt[,1],
+    x2   = Xt[,2],
+    type = "noised",
+    step = step_lab
+  )
+  
+  df_real <- data.frame(
+    x1   = X_real_clip[,1],
+    x2   = X_real_clip[,2],
+    type = "real",
+    step = step_lab
+  )
+  
+  df_list[[length(df_list) + 1]] <- rbind(df_real, df_fake)
+}
+
+df_all <- do.call(rbind, df_list)
+
+
+##  保证 step 的顺序是 t = 0, 25, 100, 500, 1000
+t_show <- c(0, 100, 200, 500, 1000)
+df_all$step <- factor(df_all$step,
+                      levels = paste0("t = ", t_show))
+ggplot(df_all, aes(x = x1, y = x2, color = type)) +
+  geom_point(alpha = 0.45, size = 0.6) +
+  coord_equal() +
+  facet_grid(. ~ step) +   # 横向排成一行
+  # 或者 facet_wrap(~ step, nrow = 1) 也可以
+  scale_color_manual(values = c("real" = "#00BFC4", "noised" = "#F8766D")) +
+  theme_minimal(base_size = 14) +
+  theme(
+    legend.position = "right",
+    panel.grid.minor = element_blank()
+  ) +
+  labs(
+    x = "x1",
+    y = "x2",
+    color = "type",
+    title = "Forward diffusion of swiss roll under cosine schedule"
+  )
 
 
 
 
+# # # 4. 把样本还原回原坐标
+# # fake <- sweep(fake_std, 2, Xsd, `*`)
+# # fake <- sweep(fake,     2, Xmean, `+`)
+# # colnames(fake) <- c("x1", "x2")
+# # 
+# # # 5. 画图
+# # plot_2d_samples(real = X, fake = fake)
+# 
+# ## 3.5 在标准化空间裁剪：只保留半径 <= R 的点
+# R <- sqrt(quantile(r2, 0.99))  # 保留 99% 最近的点
+# r2 <- rowSums(fake_std^2)            # 每个点到原点的平方距离
+# keep <- r2 <= R^2                    # 逻辑向量
+# 
+# fake_std_clip <- fake_std[keep, , drop = FALSE]
+# 
+# ## 4. 把裁剪后的样本还原回原坐标
+# fake_clip <- sweep(fake_std_clip, 2, Xsd,   `*`)
+# fake_clip <- sweep(fake_clip,     2, Xmean, `+`)
+# colnames(fake_clip) <- c("x1", "x2")
+# 
+# ## 5. 画图
+# plot_2d_samples(real = X, fake = fake_clip)
 
-# ==== 1. 生成 Swiss roll 数据 ====
-set.seed(1)
-real <- swiss_roll(n = 2000, noise = 0.1, seed = 1)  # [2000,2]
 
-# 简单看一下原始分布
-qplot(real[,1], real[,2]) + coord_equal() + theme_minimal()
 
-# ==== 2. 训练 diffusion MLP（DDPM 噪声预测） ====
+
+## ===== 0. 生成 8-Gaussians ring 数据 =====
+X <- gauss8_ring(n = 2000, radius = 2, noise = 0.1, seed = 1)
+
+# 1. 标准化（可逆）
+Xmean <- colMeans(X)
+Xsd   <- apply(X, 2, sd)
+X_std <- scale(X, center = Xmean, scale = Xsd)
+
+# 2. cosine schedule
+sch <- beta_cosine(T = 1000)
+
+
 fit_dist <- train_diffusion_dist(
-  X         = real,
-  epochs    = 100,      # 可以先用 20 快速试一下，再拉到 100+
+  X         = X_std,
+  epochs    = 200,        # 可以先用 150 看趋势
   T         = 1000,
-  lr        = 1e-3,
-  batch_size = 256,
-  schedule  = beta_linear(T = 1000),
+  lr        = 1e-4,
+  batch_size = 512,
+  schedule  = sch,
   verbose   = TRUE,
   seed      = 42
 )
-# 返回 list(model, schedule, T, type="ddpm_mlp", dim=2)
 
-# ==== 3. 用 DDPM 反向采样生成样本 ====
-fake <- sample_ddpm(
+# 3. 采样
+fake_std <- sample_ddpm(
   fit   = fit_dist,
-  n     = 2000,       # 生成同数量样本
-  steps = fit_dist$T  # 全 T 步
+  n     = 2000,
+  steps = fit_dist$T
 )
 
-# 给 fake 补上列名，方便 plot_2d_samples 使用
-colnames(fake) <- c("x1", "x2")
 
-# ==== 4. 画真实/生成对比散点图 ====
-p <- plot_2d_samples(real = real, fake = fake)
-print(p)
+# 3. 想展示的时间步（从干净到高噪声）
+t_show <- c(0, 100, 200, 500, 1000)
+
+## ===== 3. 构造每个 t 下的 noised 样本（在标准化空间） =====
+snap_std <- list()
+snap_std[["t0"]] <- as.matrix(X_std)
+
+set.seed(123)
+for (t in t_show[-1]) {
+  snap_std[[paste0("t", t)]] <- q_sample_xt_given_x0(
+    X0 = as.matrix(X_std),
+    sa = sch$sqrt_alpha_bar[t],
+    om = sch$sqrt_one_minus_alpha_bar[t]
+  )
+}
+
+## ===== 4. 根据真实数据半径裁剪，避免极端 outlier =====
+r2_real <- rowSums(X_std^2)
+R <- sqrt(quantile(r2_real, 0.99))
+
+X_real_clip_std <- X_std[r2_real <= R^2, , drop = FALSE]
+X_real_clip <- sweep(X_real_clip_std, 2, Xsd,   `*`)
+X_real_clip <- sweep(X_real_clip,     2, Xmean, `+`)
+colnames(X_real_clip) <- c("x1", "x2")
+
+## ===== 5. 组装成 df_all，用 facet_grid 横向展示 =====
+df_list <- list()
+
+for (nm in names(snap_std)) {
+  Xt_std <- snap_std[[nm]]
+  
+  # 用同一个半径 R 裁剪
+  r2 <- rowSums(Xt_std^2)
+  keep <- r2 <= R^2
+  Xt_std_clip <- Xt_std[keep, , drop = FALSE]
+  
+  # 还原到原坐标
+  Xt <- sweep(Xt_std_clip, 2, Xsd,   `*`)
+  Xt <- sweep(Xt,          2, Xmean, `+`)
+  colnames(Xt) <- c("x1", "x2")
+  
+  step_lab <- paste0("t = ", sub("t", "", nm))
+  
+  df_fake <- data.frame(
+    x1   = Xt[, 1],
+    x2   = Xt[, 2],
+    type = "noised",
+    step = step_lab
+  )
+  df_real <- data.frame(
+    x1   = X_real_clip[, 1],
+    x2   = X_real_clip[, 2],
+    type = "real",
+    step = step_lab
+  )
+  
+  df_list[[length(df_list) + 1]] <- rbind(df_real, df_fake)
+}
+
+df_all <- do.call(rbind, df_list)
+
+# 控制 facet 顺序：t = 0, 50, 200, 500, 1000
+df_all$step <- factor(
+  df_all$step,
+  levels = paste0("t = ", t_show)
+)
+
+## ===== 6. 画图 =====
+ggplot(df_all, aes(x = x1, y = x2, color = type)) +
+  geom_point(alpha = 0.45, size = 0.6) +
+  coord_equal() +
+  facet_grid(. ~ step) +
+  scale_color_manual(values = c("real" = "#00BFC4", "noised" = "#F8766D")) +
+  theme_minimal(base_size = 14) +
+  theme(
+    legend.position    = "right",
+    panel.grid.minor   = element_blank()
+  ) +
+  labs(
+    x = "x1",
+    y = "x2",
+    color = "type",
+    title = "Forward diffusion of 8-Gaussians ring under cosine schedule"
+  )
 
 
 
@@ -111,17 +295,60 @@ img <- b[[1]]
 img$size()
 
 
+# ========== 步骤 2: 定义调度 ==========
+# Cosine schedule 比线性schedule更稳定
+schedule_cosine <- beta_cosine(T = 1000)
+schedule_linear <- beta_linear(T = 1000)
+
+
+# fit_unet_quick <- train_diffusion_image(
+#   train_dl = train_dl,
+#   epochs   = 5,
+#   T        = 1000,
+#   lr       = 1e-4,
+#   schedule = schedule_cosine,
+#   verbose  = TRUE,
+#   seed     = 42,
+#   use_unet = TRUE
+# )
+
 # 训练一个小模型试试，先 1~3 个 epoch
 fit_img <- train_diffusion_image(
   train_dl = train_dl,
   epochs   = 1,         # 可以先 1 试通，再加
   T        = 1000,
-  lr       = 2e-4,
-  schedule = beta_linear(T = 1000),
+  lr       = 1e-4,
+  schedule = schedule_cosine,   # 此前为beta_linear(T = 1000),
   verbose  = TRUE,
   seed     = 42
 )
 # 返回 list(model, schedule, T, type="ddpm_cnn")
+
+# 先用小 steps 测一下
+samples_small <- sample_ddpm(
+  fit       = fit_img,
+  n         = 2L,
+  steps     = 50L,         # 先 50 步
+  shape_img = c(28, 28)
+)
+
+dim(samples_small)
+range(samples_small)
+
+# 画 2 张图
+par(mfrow = c(1, 2), mar = c(0.1, 0.1, 0.1, 0.1))
+
+for (i in 1:2) {
+  img <- samples_small[i, , ]  # [28,28]
+  
+  # 翻转一下 y 轴，避免倒着的数字
+  image(
+    1:28, 1:28,
+    t(apply(img, 2, rev)),
+    col  = gray.colors(256),
+    axes = FALSE
+  )
+}
 
 
 # 生成 16 张 28x28 的图片
