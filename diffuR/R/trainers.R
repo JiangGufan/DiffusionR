@@ -236,5 +236,5 @@ train_diffusion_image <- function(train_dl, epochs = 3, T = 1000, lr = 1e-4,
   }
 
   list(model = model, schedule = schedule, T = T, type = "ddpm_cnn")
-  # list(model = model, schedule = schedule, T = T, type = "ddpm_unet")
+# list(model = model, schedule = schedule, T = T, type = "ddpm_unet")
 }

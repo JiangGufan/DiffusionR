@@ -382,6 +382,93 @@ sample_ddpm <- function(fit, n = 64, steps = NULL, shape_img = NULL, seed = 123)
   out
 }
 
+# 采样一条/多条反向扩散轨迹，在若干 t_show 处截屏
+# 仅支持图像模型 (fit$type == "ddpm_cnn")
+sample_ddpm_trajectory <- function(fit,
+                                   n         = 16L,
+                                   t_show    = c(1000, 500, 200, 100, 0),
+                                   shape_img = c(28, 28),
+                                   seed      = 123) {
+  stopifnot(fit$type == "ddpm_cnn")
+  stopifnot(!is.null(shape_img))
+  
+  T   <- fit$T
+  sch <- fit$schedule
+  
+  # 为了稳定、可重复
+  set.seed(seed)
+  torch::torch_manual_seed(seed)
+  
+  B <- n
+  H <- shape_img[1]
+  W <- shape_img[2]
+  
+  # 确保 t_show 在 [0, T] 之间
+  t_show <- unique(t_show)
+  t_show <- t_show[t_show >= 0 & t_show <= T]
+  
+  snaps <- list()  # 存储每个 t 的 [B,H,W] 图像
+  
+  torch::with_no_grad({
+    # 起点：x_T ~ N(0, I)
+    x <- torch::torch_randn(B, 1, H, W)
+    
+    # 如果想要 t = T 的状态（最「马赛克」），这里保存一下
+    if (T %in% t_show) {
+      img_T <- (x$clamp(-1, 1) + 1) / 2
+      img_T <- img_T$to(device = "cpu")$squeeze(2)
+      snaps[[paste0("t_", T)]] <- as.array(img_T)
+    }
+    
+    for (ti in T:1) {
+      # 当前时间步 ti，对应 t_frac ∈ (0,1]
+      t_frac <- torch::torch_full(c(B, 1), ti / T)
+      
+      # 预测噪声 eps_theta(x_t, t)
+      eps <- fit$model(x, t_frac)
+      
+      beta_t      <- sch$beta[ti]
+      alpha_t     <- sch$alpha[ti]
+      alpha_bar_t <- sch$alpha_bar[ti]
+      if (ti > 1) {
+        alpha_bar_prev <- sch$alpha_bar[ti - 1]
+      } else {
+        alpha_bar_prev <- 1
+      }
+      # 后验方差 β̃_t
+      beta_t_tilde <- (1 - alpha_bar_prev) / (1 - alpha_bar_t) * beta_t
+      
+      # 反向均值 μ_theta(x_t, t)
+      mu <- (1 / sqrt(alpha_t)) * (
+        x - (beta_t / sqrt(1 - alpha_bar_t)) * eps
+      )
+      
+      # 采样 x_{t-1}
+      if (ti > 1) {
+        x <- mu + sqrt(beta_t_tilde) * torch::torch_randn_like(x)
+      } else {
+        x <- mu  # t=1 -> t=0 最后一步不加噪声
+      }
+      
+      # 此时 x 已经是时间步 t_now = ti - 1 的状态
+      t_now <- ti - 1
+      if (t_now %in% t_show) {
+        img_now <- (x$clamp(-1, 1) + 1) / 2
+        img_now <- img_now$to(device = "cpu")$squeeze(2)
+        snaps[[paste0("t_", t_now)]] <- as.array(img_now)  # [B,H,W]
+      }
+    }
+  })
+  
+  # 按 t_show 的顺序组织输出
+  out <- vector("list", length(t_show))
+  names(out) <- paste0("t_", t_show)
+  for (k in seq_along(t_show)) {
+    nm <- names(out)[k]
+    out[[k]] <- snaps[[nm]]
+  }
+  out
+}
 
 
 

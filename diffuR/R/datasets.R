@@ -29,6 +29,26 @@ gauss8_ring <- function(n = 2000, radius = 2, noise = 0.1, seed = 1) {
   x
 }
 
+# 爱心形状（parametric heart curve）
+heart2d <- function(n = 2000, noise = 0.1, seed = 1) {
+  set.seed(seed)
+  t <- runif(n, 0, 2*pi)
+
+  x <- 16 * sin(t)^3
+  y <- 13 * cos(t) - 5 * cos(2*t) - 2 * cos(3*t) - cos(4*t)
+
+  # 缩放到大约 [-2,2] 范围
+  x <- x / 8
+  y <- y / 8
+
+  x <- x + rnorm(n, sd = noise)
+  y <- y + rnorm(n, sd = noise)
+
+  out <- cbind(x, y)
+  colnames(out) <- c("x1", "x2")
+  out
+}
+
 
 #' @export
 plot_2d_samples <- function(real, fake){
@@ -40,19 +60,45 @@ plot_2d_samples <- function(real, fake){
     ggplot2::coord_equal() + ggplot2::theme_minimal()
 }
 
-# MNIST dataloader
-mnist_train_dataloader <- function(batch_size = 128){
-  if(!requireNamespace("torchvision", quietly = TRUE)){
+# # MNIST dataloader
+# mnist_train_dataloader <- function(batch_size = 128){
+#   if(!requireNamespace("torchvision", quietly = TRUE)){
+#     stop("Please install torchvision: remotes::install_github('mlverse/torchvision')")
+#   }
+#   ds <- torchvision::mnist_dataset(
+#     root = tempdir(), train = TRUE, download = TRUE,
+#     transform = function(x){
+#       x <- torch::torch_tensor(as.array(x), dtype = torch::torch_float())/255
+#       # x$unsqueeze(1L)  # [1,28,28]
+#       # 不再 unsqueeze，在这里保持 [28,28]
+#       x
+#     }
+#   )
+#   torch::dataloader(ds, batch_size = batch_size, shuffle = TRUE)
+# }
+
+# MNIST dataloader（支持大 batch + 多 worker）
+mnist_train_dataloader <- function(batch_size = 128,
+                                   num_workers = 0L) {
+  if (!requireNamespace("torchvision", quietly = TRUE)) {
     stop("Please install torchvision: remotes::install_github('mlverse/torchvision')")
   }
+
   ds <- torchvision::mnist_dataset(
-    root = tempdir(), train = TRUE, download = TRUE,
-    transform = function(x){
-      x <- torch::torch_tensor(as.array(x), dtype = torch::torch_float())/255
-      # x$unsqueeze(1L)  # [1,28,28]
-      # 不再 unsqueeze，在这里保持 [28,28]
+    root     = tempdir(),
+    train    = TRUE,
+    download = TRUE,
+    transform = function(x) {
+      x <- torch::torch_tensor(as.array(x), dtype = torch::torch_float()) / 255
+      # 保持 [28, 28]，跟你原来的设定一致
       x
     }
   )
-  torch::dataloader(ds, batch_size = batch_size, shuffle = TRUE)
+
+  torch::dataloader(
+    ds,
+    batch_size  = batch_size,
+    shuffle     = TRUE,
+    num_workers = num_workers  # ✅ 这里开多 worker
+  )
 }
