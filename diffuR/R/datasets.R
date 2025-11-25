@@ -50,6 +50,29 @@ heart2d <- function(n = 2000, noise = 0.1, seed = 1) {
 }
 
 
+#' Train-Test-Validation split for synthetic distributions
+#' @param X matrix of shape [n, d]
+#' @param train_ratio proportion for training set
+#' @param val_ratio proportion for validation set (test = 1 - train - val)
+#' @param seed random seed for reproducibility
+#' @return list with $train, $val, $test (each is a matrix)
+#' @export
+train_test_split <- function(X, train_ratio = 0.7, val_ratio = 0.15, seed = 42) {
+  set.seed(seed)
+  n <- nrow(X)
+  idx <- sample(n)
+  
+  n_train <- floor(n * train_ratio)
+  n_val <- floor(n * val_ratio)
+  n_test <- n - n_train - n_val
+  
+  list(
+    train = X[idx[1:n_train], , drop = FALSE],
+    val = X[idx[(n_train + 1):(n_train + n_val)], , drop = FALSE],
+    test = X[idx[(n_train + n_val + 1):n], , drop = FALSE]
+  )
+}
+
 #' @export
 plot_2d_samples <- function(real, fake){
   df1 <- data.frame(real); df1$type <- "real"
@@ -100,5 +123,94 @@ mnist_train_dataloader <- function(batch_size = 128,
     batch_size  = batch_size,
     shuffle     = TRUE,
     num_workers = num_workers  # ✅ 这里开多 worker
+  )
+}
+
+#' MNIST dataset with train/val/test split
+#' @param train_ratio proportion for training (default 0.7)
+#' @param val_ratio proportion for validation (default 0.15)
+#' @param batch_size batch size for dataloaders
+#' @param num_workers number of workers for data loading
+#' @param seed random seed for reproducibility
+#' @return list with $train_dl, $val_dl, $test_dl dataloaders
+#' @export
+mnist_split <- function(train_ratio = 0.7, val_ratio = 0.15, 
+                        batch_size = 128, num_workers = 0L, seed = 42) {
+  if (!requireNamespace("torchvision", quietly = TRUE)) {
+    stop("Please install torchvision: remotes::install_github('mlverse/torchvision')")
+  }
+  
+  set.seed(seed)
+  torch::torch_manual_seed(seed)
+  
+  # Load full MNIST train set
+  full_ds <- torchvision::mnist_dataset(
+    root     = tempdir(),
+    train    = TRUE,
+    download = TRUE,
+    transform = function(x) {
+      torch::torch_tensor(as.array(x), dtype = torch::torch_float()) / 255
+    }
+  )
+  
+  # Get dataset size
+  n <- length(full_ds)
+  idx <- sample(n)
+  
+  n_train <- floor(n * train_ratio)
+  n_val <- floor(n * val_ratio)
+  
+  train_idx <- idx[1:n_train]
+  val_idx <- idx[(n_train + 1):(n_train + n_val)]
+  test_idx <- idx[(n_train + n_val + 1):n]
+  
+  # Create subset datasets
+  train_ds <- torch::dataset(
+    name = "mnist_subset",
+    initialize = function(full_dataset, indices) {
+      self$full_ds <- full_dataset
+      self$indices <- indices
+    },
+    .length = function() {
+      length(self$indices)
+    },
+    .getitem = function(i) {
+      self$full_ds[self$indices[i]]
+    }
+  )(full_ds, train_idx)
+  
+  val_ds <- torch::dataset(
+    name = "mnist_subset",
+    initialize = function(full_dataset, indices) {
+      self$full_ds <- full_dataset
+      self$indices <- indices
+    },
+    .length = function() {
+      length(self$indices)
+    },
+    .getitem = function(i) {
+      self$full_ds[self$indices[i]]
+    }
+  )(full_ds, val_idx)
+  
+  test_ds <- torch::dataset(
+    name = "mnist_subset",
+    initialize = function(full_dataset, indices) {
+      self$full_ds <- full_dataset
+      self$indices <- indices
+    },
+    .length = function() {
+      length(self$indices)
+    },
+    .getitem = function(i) {
+      self$full_ds[self$indices[i]]
+    }
+  )(full_ds, test_idx)
+  
+  # Create dataloaders
+  list(
+    train_dl = torch::dataloader(train_ds, batch_size = batch_size, shuffle = TRUE, num_workers = num_workers),
+    val_dl = torch::dataloader(val_ds, batch_size = batch_size, shuffle = FALSE, num_workers = num_workers),
+    test_dl = torch::dataloader(test_ds, batch_size = batch_size, shuffle = FALSE, num_workers = num_workers)
   )
 }

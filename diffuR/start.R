@@ -305,6 +305,8 @@ fit_dist <- train_diffusion_dist(
   seed      = 42
 )
 
+
+
 # 3. 采样
 fake_std <- sample_ddpm(
   fit   = fit_dist,
@@ -427,6 +429,22 @@ b  <- it$.next()
 img <- b[[1]]
 img$size()
 
+# # 查看维度
+# print(img$size())  # 应该是 [batch_size, 1, 28, 28]
+# 
+# # 取前16张
+# imgs_array <- as.array(img[, , 1:16])
+# 
+# # 按4×4排列
+# par(mfrow = c(4, 4), mar = c(0, 0, 0, 0))
+# for (i in 1:16) {
+#   image(t(imgs_array[28:1, , i]),  # 直接反转行
+#         col = grey(seq(0, 1, length = 256)),
+#         axes = FALSE)
+# }
+# par(mfrow = c(1, 1))
+
+
 
 # ========== 步骤 2: 定义调度 ==========
 # Cosine schedule 比线性schedule更稳定
@@ -434,56 +452,52 @@ schedule_cosine <- beta_cosine(T = 1000)
 schedule_linear <- beta_linear(T = 1000)
 
 
-# fit_unet_quick <- train_diffusion_image(
-#   train_dl = train_dl,
-#   epochs   = 5,
-#   T        = 1000,
-#   lr       = 1e-4,
-#   schedule = schedule_cosine,
-#   verbose  = TRUE,
-#   seed     = 42,
-#   use_unet = TRUE
-# )
-
+# 测试训练 1 epoch 耗时（不改函数）
+t0 <- Sys.time()
 # 训练一个小模型试试，先 1~3 个 epoch
 fit_img <- train_diffusion_image(
   train_dl = train_dl,
-  epochs   = 10,         # 可以先 1 试通，再加
+  epochs   = 15,         # 可以先 1 试通，再加
   T        = 1000,
   lr       = 1e-4,
-  schedule = schedule_cosine,   # 此前为beta_linear(T = 1000),
+  schedule = schedule_cosine, #schedule_cosine,   # 此前为beta_linear(T = 1000),
   verbose  = TRUE,
   seed     = 42
 )
 # 返回 list(model, schedule, T, type="ddpm_cnn")
-
-# 先用小 steps 测一下
-samples_small <- sample_ddpm(
-  fit       = fit_img,
-  n         = 2L,
-  steps     = 50L,         # 先 50 步
-  shape_img = c(28, 28)
-)
-
-dim(samples_small)
-range(samples_small)
-
-# 画 2 张图
-par(mfrow = c(1, 2), mar = c(0.1, 0.1, 0.1, 0.1))
-
-for (i in 1:2) {
-  img <- samples_small[i, , ]  # [28,28]
-  
-  # 翻转一下 y 轴，避免倒着的数字
-  image(
-    1:28, 1:28,
-    t(apply(img, 2, rev)),
-    col  = gray.colors(256),
-    axes = FALSE
-  )
-}
+t1 <- Sys.time()
+cat("Train 1 epoch elapsed (sec):", as.numeric(difftime(t1, t0, units = "secs")), "\n")
 
 
+# # 先用小 steps 测一下
+# samples_small <- sample_ddpm(
+#   fit       = fit_img,
+#   n         = 2L,
+#   steps     = 50L,         # 先 50 步
+#   shape_img = c(28, 28)
+# )
+# 
+# dim(samples_small)
+# range(samples_small)
+# 
+# # 画 2 张图
+# par(mfrow = c(1, 2), mar = c(0.1, 0.1, 0.1, 0.1))
+# 
+# for (i in 1:2) {
+#   img <- samples_small[i, , ]  # [28,28]
+#   
+#   # 翻转一下 y 轴，避免倒着的数字
+#   image(
+#     1:28, 1:28,
+#     t(apply(img, 2, rev)),
+#     col  = gray.colors(256),
+#     axes = FALSE
+#   )
+# }
+
+
+# 测试 full sampling（16 samples x T steps）注意可能耗时很长
+t0f <- Sys.time()
 # 生成 16 张 28x28 的图片
 samples <- sample_ddpm(
   fit       = fit_img,
@@ -491,6 +505,8 @@ samples <- sample_ddpm(
   steps     = fit_img$T,         # 全 T 步
   shape_img = c(28, 28)
 )
+t1f <- Sys.time()
+cat("Sampling 16 samples x", fit_img$T, "steps elapsed (sec):", as.numeric(difftime(t1f, t0f, units = "secs")), "\n")
 
 # 'samples'：预期是 [16, 28, 28] 的数组，范围在 [0,1]
 dim(samples)

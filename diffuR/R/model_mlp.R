@@ -111,7 +111,7 @@ res_mlp_block <- function(hidden_dim, t_hidden_dim) {
 }
 
 # ===== 改进版 epsilon-MLP，用于向量分布（swiss roll 等） =====
-build_mlp_eps <- function(dim_x, hidden = 256, t_dim = 64, n_blocks = 4) {
+build_mlp_eps <- function(dim_x, hidden = 256, t_dim = 64, n_blocks = 4) { #256hidden, 4blocks
   torch::nn_module(
     classname = "mlp_eps",
     

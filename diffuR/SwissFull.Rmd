@@ -1,0 +1,310 @@
+---
+title: "Diffusion MLP on Swiss Roll (Train/Val/Test + Metrics)"
+author: "Gufan Jiang"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_depth: 2
+    number_sections: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo   = TRUE,
+  message = TRUE,
+  warning = FALSE,
+  fig.align = "center"
+)
+# Rcpp / RcppArmadillo
+
+library(Rcpp)
+library(RcppArmadillo)
+
+# 源码路径：根据你本地情况自行调整
+
+Rcpp::sourceCpp("/Users/jiang/MY_RUC/Rcoding/Rcpp/finalProj/diffuR/src/kernels.cpp")
+source("/Users/jiang/MY_RUC/Rcoding/Rcpp/finalProj/diffuR/R/datasets.R")
+source("/Users/jiang/MY_RUC/Rcoding/Rcpp/finalProj/diffuR/R/metrics.R")
+source("/Users/jiang/MY_RUC/Rcoding/Rcpp/finalProj/diffuR/R/model_cnn.R")
+source("/Users/jiang/MY_RUC/Rcoding/Rcpp/finalProj/diffuR/R/model_mlp.R")
+source("/Users/jiang/MY_RUC/Rcoding/Rcpp/finalProj/diffuR/R/parallel.R")
+source("/Users/jiang/MY_RUC/Rcoding/Rcpp/finalProj/diffuR/R/sampling.R")
+source("/Users/jiang/MY_RUC/Rcoding/Rcpp/finalProj/diffuR/R/schedules.R")
+source("/Users/jiang/MY_RUC/Rcoding/Rcpp/finalProj/diffuR/R/trainers.R")
+
+# 其他依赖
+
+library(torch)
+library(ggplot2)
+library(coro)
+```
+
+
+```{r}
+cat("\n")
+cat(strrep("=", 79), "\n")
+cat("EXAMPLE 1: MLP Diffusion on Swiss Roll with Train/Val/Test Split\n")
+cat(strrep("=", 79), "\n")
+
+# 1. 生成完整数据集
+
+X_full <- swiss_roll(n = 2000, noise = 0.1, seed = 1)
+
+# 2. 标准化（可逆）
+
+Xmean <- colMeans(X_full)
+Xsd   <- apply(X_full, 2, sd)
+X_full_std <- scale(X_full, center = Xmean, scale = Xsd)
+
+# 3. 数据划分：70% train, 15% val, 15% test
+
+set.seed(42)
+splits <- train_test_split(
+X_full_std,
+train_ratio = 0.7,
+val_ratio   = 0.15,
+seed        = 42
+)
+
+cat(sprintf("\n✓ Data split: train=%d, val=%d, test=%d\n",
+nrow(splits$train), nrow(splits$val), nrow(splits$test)))
+```
+
+```{r}
+# 4. 定义 schedule
+sch <- beta_cosine(T = 1000)
+
+# 5. 训练模型（仅在训练集上）
+cat("\n--- Training MLP Diffusion Model ---\n")
+fit_mlp <- train_diffusion_dist(
+X          = splits$train,  # ✅ 只在训练集上训练
+epochs     = 200,
+T          = 1000,
+lr         = 1e-4,
+batch_size = 256,
+schedule   = sch,
+verbose    = TRUE,
+seed       = 42
+)
+```
+
+
+```{r}
+cat("\n--- Sampling & Evaluating on Validation Set ---\n")
+
+n_val_samples <- nrow(splits$val)
+fake_val_std <- sample_ddpm(
+fit   = fit_mlp,
+n     = n_val_samples,
+steps = fit_mlp$T,
+seed  = 123
+)
+
+cat("\n--- Validation Set Metrics ---\n")
+metrics_val <- evaluate_samples(
+X_real  = splits$val,
+X_fake  = fake_val_std,
+type    = "distribution",
+verbose = TRUE
+)
+
+metrics_val
+```
+
+
+```{r}
+cat("\n--- Final Evaluation on Test Set ---\n")
+
+n_test_samples <- nrow(splits$test)
+fake_test_std <- sample_ddpm(
+fit   = fit_mlp,
+n     = n_test_samples,
+steps = fit_mlp$T,
+seed  = 456
+)
+
+metrics_test <- evaluate_samples(
+X_real  = splits$test,
+X_fake  = fake_test_std,
+type    = "distribution",
+verbose = TRUE
+)
+
+metrics_test
+```
+
+
+
+```{r}
+metrics_summary <- data.frame(
+split          = c("validation", "test"),
+mmd            = c(metrics_val$mmd,            metrics_test$mmd),
+frechet        = c(metrics_val$frechet,        metrics_test$frechet),
+wasserstein_1d = c(metrics_val$wasserstein_1d, metrics_test$wasserstein_1d),
+coverage       = c(metrics_val$coverage,       metrics_test$coverage),
+density        = c(metrics_val$density,        metrics_test$density)
+)
+
+knitr::kable(metrics_summary, digits = 4, caption = "Distribution metrics on validation and test sets")
+
+```
+
+
+
+```{r}
+# 9. 在训练集中采样一大批点，用于可视化
+
+fake_full_std <- sample_ddpm(
+fit   = fit_mlp,
+n     = nrow(splits$train),
+steps = fit_mlp$T,
+seed  = 789
+)
+
+# ---- 还原到原坐标 ----
+
+fake_full <- sweep(fake_full_std, 2, Xsd, `*`)
+fake_full <- sweep(fake_full,     2, Xmean, `+`)
+colnames(fake_full) <- c("x1", "x2")
+
+# 🔹 按半径的 99% quantile 去除 outlier
+
+fake_full_df <- as.data.frame(fake_full)
+
+# 计算每个点到原点的距离
+
+r <- sqrt(fake_full_df$x1^2 + fake_full_df$x2^2)
+
+# 找到 99% 分位数阈值
+
+r_thr <- quantile(r, 0.99)
+
+# 只保留半径 <= 99% 分位数的点
+
+fake_full_trim <- fake_full_df[r <= r_thr, ]
+
+cat(sprintf("Removed %d outliers (top 1%% by radius)\n",
+nrow(fake_full_df) - nrow(fake_full_trim)))
+
+# ---- 还原训练集到原坐标 ----
+
+X_train_orig <- sweep(splits$train, 2, Xsd, `*`)
+X_train_orig <- sweep(X_train_orig, 2, Xmean, `+`)
+colnames(X_train_orig) <- c("x1", "x2")
+
+# 先准备两个数据框，加上标记列
+
+df_real <- data.frame(
+X_train_orig,
+type  = "real",
+panel = "Training data"
+)
+
+df_fake <- data.frame(
+fake_full_trim,
+type  = "fake",
+panel = "Generated (99% trimmed)"
+)
+
+# 合在一起
+
+df_all <- rbind(df_real, df_fake)
+
+# 保证 facet 的顺序
+
+df_all$panel <- factor(df_all$panel,
+levels = c("Training data", "Generated (99% trimmed)"))
+
+# 画图：一行两个 facet
+
+p_all <- ggplot(df_all, aes(x = x1, y = x2, color = type)) +
+geom_point(alpha = 0.45, size = 0.6) +
+coord_equal() +
+facet_wrap(~ panel, nrow = 1) +
+scale_color_manual(values = c("real" = "#00BFC4",
+"fake" = "#F8766D")) +
+theme_minimal(base_size = 14) +
+theme(
+legend.position = "right",
+panel.grid.minor = element_blank()
+) +
+labs(
+x     = "x1",
+y     = "x2",
+color = "type",
+title = "Real vs Generated swiss roll (99% quantile trimmed)"
+)
+
+p_all
+
+```
+
+```{r}
+# ============================================================
+# 可视化：测试集真实数据 vs 生成样本（使用 test 评估时的那批样本）
+# ============================================================
+
+# 还原测试集到原坐标
+X_test_orig <- sweep(splits$test, 2, Xsd, `*`)
+X_test_orig <- sweep(X_test_orig, 2, Xmean, `+`)
+colnames(X_test_orig) <- c("x1", "x2")
+
+# 还原生成的测试样本到原坐标
+fake_test <- sweep(fake_test_std, 2, Xsd, `*`)
+fake_test <- sweep(fake_test,     2, Xmean, `+`)
+colnames(fake_test) <- c("x1", "x2")
+
+fake_test_df <- as.data.frame(fake_test)
+
+# 🔹 按半径的 99% quantile 去除 outlier
+r_test <- sqrt(fake_test_df$x1^2 + fake_test_df$x2^2)
+r_thr_test <- quantile(r_test, 0.99)
+
+fake_test_trim <- fake_test_df[r_test <= r_thr_test, ]
+
+cat(sprintf("Test-vis: removed %d outliers (top 1%% by radius)\n",
+            nrow(fake_test_df) - nrow(fake_test_trim)))
+
+# 先准备两个数据框，加上标记列
+df_real <- data.frame(
+  X_test_orig,
+  type  = "real",
+  panel = "Test data"
+)
+
+df_fake <- data.frame(
+  fake_test_trim,
+  type  = "fake",
+  panel = "Generated (99% trimmed)"
+)
+
+# 合在一起
+df_all <- rbind(df_real, df_fake)
+
+# 保证 facet 顺序
+df_all$panel <- factor(df_all$panel,
+                       levels = c("Test data", "Generated (99% trimmed)"))
+
+# 画图：一行两个 facet
+p_all <- ggplot(df_all, aes(x = x1, y = x2, color = type)) +
+  geom_point(alpha = 0.45, size = 0.6) +
+  coord_equal() +
+  facet_wrap(~ panel, nrow = 1) +
+  scale_color_manual(values = c("real" = "#00BFC4",
+                                "fake" = "#F8766D")) +
+  theme_minimal(base_size = 14) +
+  theme(
+    legend.position = "right",
+    panel.grid.minor = element_blank()
+  ) +
+  labs(
+    x     = "x1",
+    y     = "x2",
+    color = "type",
+    title = "Test vs Generated swiss roll (99% quantile trimmed)"
+  )
+
+p_all
+```
+
